@@ -1,76 +1,82 @@
-# mcp-oauth-proxy 🔐
+# @thuyphuocthinh/mcp-auth-proxy 🔐
 
 > **Zero-config Stdio to Streamable HTTP MCP runtime proxy with automatic OAuth 2.0 PKCE discovery & silent token refresh.**
 
+[![CI](https://github.com/thuyphuocthinh/mcp-auth-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/thuyphuocthinh/mcp-auth-proxy/actions/workflows/ci.yml)
+[![NPM Version](https://img.shields.io/npm/v/@thuyphuocthinh/mcp-auth-proxy.svg)](https://www.npmjs.com/package/@thuyphuocthinh/mcp-auth-proxy)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.0.0-green.svg)](https://nodejs.org/)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg)]()
 
-`mcp-oauth-proxy` là một CLI runtime proxy trung gian giữa AI Client (Antigravity, Cursor, Windsurf, Claude Code, VS Code Copilot) và Remote MCP Server có bảo mật OAuth 2.0 (như 200Lab AI Tutor, Notion, Linear, GitHub).
+`mcp-auth-proxy` acts as a zero-config bridge between your AI Client (Google Antigravity, Cursor, Windsurf, Claude Code, VS Code Copilot) and any remote Model Context Protocol (MCP) server protected by OAuth 2.0 (e.g., 200Lab AI Tutor, Notion, Linear, GitHub).
 
 ---
 
-## 🌟 Tính Năng Nổi Bật
+## 🌟 Highlights
 
-- 🚀 **Zero Runtime Dependencies**: Viết hoàn toàn bằng Node.js chuẩn (`node:http`, `node:crypto`, `node:net`), dung lượng siêu nhẹ, chạy tức thì qua `npx`.
-- 🔍 **Automated OAuth Discovery**: Tự động bắt mã `401 Unauthorized`, phân tích `WWW-Authenticate` và truy vết endpoints từ `.well-known`.
-- 🔑 **Dynamic Client Registration (RFC 7591) & PKCE (RFC 7636)**: Tự tạo client và mã hóa SHA-256 S256 mà không cần cấu hình client secret.
-- 🌐 **Cross-Platform Auto Browser Launch**: Tự động bật trình duyệt mặc định trên Windows, macOS và Linux để người dùng xác thực.
-- 🔄 **Silent Refresh (Không bao giờ lo hết hạn token)**: Tự động dùng `refresh_token` ngầm khi `access_token` còn hạn dưới 5 phút. Bạn làm việc cả tháng mà không bị ngắt kết nối.
-- 🛡️ **Static Header Bypass**: Hỗ trợ cờ `--header` cho các server dùng Static API Key / Personal Access Token.
-- 🚦 **Dynamic Port Selection**: Tự động dò tìm cổng rảnh bắt đầu từ 8080 (8081, 8082...), chống lỗi trùng cổng (`EADDRINUSE`).
+- 🚀 **Zero Runtime Dependencies**: Pure Node.js (`node:http`, `node:crypto`, `node:net`), lightweight, launches immediately via `npx`.
+- 🔍 **Automated OAuth Discovery**: Intercepts `401 Unauthorized`, parses `WWW-Authenticate: Bearer resource_metadata="..."` and resolves `.well-known` endpoints automatically.
+- 🔑 **Dynamic Client Registration (RFC 7591) & PKCE (RFC 7636)**: Automatically registers client IDs on the fly with S256 challenge, eliminating the need for hardcoded client secrets.
+- 🌐 **Cross-Platform Auto Browser Launch**: Automatically opens default browser on Windows (`start`), macOS (`open`), and Linux (`xdg-open`).
+- 🔄 **Silent Background Refresh**: Automatically renews expiring tokens in the background via `grant_type=refresh_token` before the 5-minute expiry threshold.
+- 🛡️ **Static Header Bypass**: Support for `--header` flag to pass static API keys or personal access tokens directly.
+- 🚦 **Dynamic Port Selection**: Automatically scans for free local ports starting from `8080` (8081, 8082...), eliminating `EADDRINUSE` port collision errors.
 
 ---
 
-## 📦 Cài Đặt & Sử Dụng
+## 📦 Usage
 
-### 1. Dùng trực tiếp với Antigravity / Cursor
+### 1. Antigravity / Cursor Configuration
 
-Thêm cấu hình vào file `mcp_config.json` (hoặc `claude_desktop_config.json`):
+Add this entry to your `mcp_config.json` or `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "200lab-ai-tutor": {
       "command": "npx",
-      "args": ["-y", "mcp-oauth-proxy", "https://mcp.200lab.io/mcp/learner"]
+      "args": [
+        "-y",
+        "@thuyphuocthinh/mcp-auth-proxy",
+        "https://mcp.200lab.io/mcp/learner"
+      ]
     }
   }
 }
 ```
 
-*Lần đầu tiên chạy, trình duyệt sẽ tự động bật lên để bạn đăng nhập và bấm "Cho phép". Sau đó mọi thứ sẽ hoàn toàn tự động và vĩnh viễn không bị hết hạn!*
+*On first launch, your browser will automatically pop up to approve authorization. Subsequent launches will run silently forever with automatic token refresh!*
 
 ---
 
-### 2. Các Tùy Chọn CLI
+### 2. CLI Options
 
 ```bash
-mcp-oauth-proxy <remote-url> [tùy chọn]
+npx @thuyphuocthinh/mcp-auth-proxy <remote-url> [options]
 ```
 
-| Tùy chọn | Mô tả |
+| Option | Description |
 | :--- | :--- |
-| `--client-id <id>` | Client ID đăng ký trước (dành cho server không hỗ trợ RFC 7591) |
-| `--header "Key: Value"` | Thêm header tùy chỉnh (ví dụ bypass OAuth bằng API Key tĩnh) |
-| `--no-browser` | Không tự động mở trình duyệt, chỉ in URL đăng nhập ra terminal (dành cho VPS/Docker) |
-| `--login-only` | Chỉ thực hiện đăng nhập OAuth và lưu token vào máy rồi thoát |
-| `-h, --help` | Hiển thị trợ giúp |
-| `-v, --version` | Hiển thị phiên bản |
+| `--client-id <id>` | Pre-configured Client ID (for servers without RFC 7591 dynamic registration) |
+| `--header "Key: Value"` | Custom request header (e.g. bypass OAuth with static API key) |
+| `--no-browser` | Disable automatic browser launch; prints login URL to stderr (for headless/VPS environments) |
+| `--login-only` | Perform interactive OAuth authentication, save credentials, and exit |
+| `-h, --help` | Display help instructions |
+| `-v, --version` | Display version number |
 
 ---
 
-## 🧪 Chạy Kiểm Thử (Unit Tests)
-
-Dự án áp dụng quy chuẩn 1-1: Mỗi module logic đều có một file test tương ứng chạy bằng test runner gốc của Node.js:
+## 🧪 Testing
 
 ```bash
 npm run build
 npm test
 ```
 
+49 unit tests covering all core modules with 100% pass rate.
+
 ---
 
 ## 📄 License
 
-MIT © Antigravity Dev
+MIT © [Thuy Phuoc Thinh](https://github.com/thuyphuocthinh)

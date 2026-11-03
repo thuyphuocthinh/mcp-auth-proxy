@@ -1,16 +1,35 @@
 {
-  "name": "mcp-oauth-proxy",
+  "name": "@thuyphuocthinh/mcp-auth-proxy",
   "version": "1.0.0",
   "description": "Zero-config Stdio to Streamable HTTP MCP runtime proxy with automatic OAuth PKCE & silent refresh",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/src/index.js",
   "bin": {
+    "mcp-auth-proxy": "./bin/cli.js",
     "mcp-oauth-proxy": "./bin/cli.js"
   },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thuyphuocthinh/mcp-auth-proxy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/thuyphuocthinh/mcp-auth-proxy/issues"
+  },
+  "homepage": "https://github.com/thuyphuocthinh/mcp-auth-proxy#readme",
   "scripts": {
     "build": "tsc",
     "start": "node ./bin/cli.js",
-    "test": "node --test dist/**/*.test.js"
+    "test": "node --test dist/**/*.test.js",
+    "prepack": "npm run build"
   },
   "keywords": [
     "mcp",
@@ -21,9 +40,10 @@
     "stdio",
     "ai-agent",
     "antigravity",
-    "cursor"
+    "cursor",
+    "claude"
   ],
-  "author": "Antigravity Dev",
+  "author": "Thuy Phuoc Thinh",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^22.10.1",
