@@ -1,0 +1,32 @@
+{
+  "name": "mcp-oauth-proxy",
+  "version": "1.0.0",
+  "description": "Zero-config Stdio to Streamable HTTP MCP runtime proxy with automatic OAuth PKCE & silent refresh",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "mcp-oauth-proxy": "./bin/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node ./bin/cli.js",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "oauth",
+    "pkce",
+    "proxy",
+    "stdio",
+    "ai-agent",
+    "antigravity",
+    "cursor"
+  ],
+  "author": "Antigravity Dev",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "typescript": "^5.7.2"
+  }
+}
