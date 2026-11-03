@@ -57,23 +57,24 @@ export function parseArgs(args: string[]): CliOptions {
 }
 
 export function printHelp(): void {
-  // Toàn bộ hướng dẫn in ra stderr để không làm hỏng stream JSON-RPC của stdout
+  // All operational logging and help text MUST be printed to stderr
+  // so it does not interfere with the Stdio JSON-RPC stream on stdout!
   console.error(`
 mcp-oauth-proxy v${VERSION}
 Zero-config Stdio to Streamable HTTP MCP runtime proxy with automatic OAuth PKCE & silent refresh.
 
-Cú pháp:
-  mcp-oauth-proxy <remote-url> [tùy chọn]
+Usage:
+  mcp-oauth-proxy <remote-url> [options]
 
-Tùy chọn:
-  --client-id <id>       Client ID đăng ký trước (dành cho server không hỗ trợ RFC 7591)
-  --header "K: V"        Thêm header tùy chỉnh (ví dụ bypass OAuth bằng API Key tĩnh)
-  --no-browser           Không tự động mở trình duyệt, chỉ in URL đăng nhập ra terminal
-  --login-only           Chỉ thực hiện đăng nhập OAuth và lưu token vào máy rồi thoát
-  -h, --help             Hiển thị trợ giúp
-  -v, --version          Hiển thị phiên bản
+Options:
+  --client-id <id>       Pre-configured Client ID (for servers without RFC 7591 dynamic registration)
+  --header "K: V"        Custom request header (e.g. bypass OAuth using static API key)
+  --no-browser           Do not automatically open default browser; print authorization URL to stderr
+  --login-only           Perform interactive OAuth authentication, save credentials, and exit
+  -h, --help             Display this help message
+  -v, --version          Display version number
 
-Ví dụ:
+Examples:
   mcp-oauth-proxy https://mcp.200lab.io/mcp/learner
   mcp-oauth-proxy https://api.example.com/mcp --header "Authorization: Bearer my_api_key"
 `);
@@ -93,21 +94,20 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   }
 
   if (!options.remoteUrl) {
-    console.error(`[-] Thiếu tham số <remote-url>. Gõ --help để xem hướng dẫn.`);
+    console.error(`[-] Missing required <remote-url> parameter. Run with --help for instructions.`);
     process.exit(1);
   }
 
   const remoteUrl = options.remoteUrl;
   const store = new TokenStore();
 
-  // Hàm lấy token hợp lệ (hoặc refresh ngầm)
   const getToken = async (): Promise<string> => {
-    // Nếu người dùng đã truyền header Authorization thủ công qua --header
+    // If user provided a manual Authorization header via --header
     if (options.headers['Authorization']) {
       return '';
     }
 
-    // 1. Thăm dò và phân tích OAuth Metadata
+    // 1. Discover OAuth Metadata from remote server
     const metadata = await discoverOAuth(remoteUrl);
     const clientId = await resolveClientId({
       registrationEndpoint: metadata.registrationEndpoint,
@@ -116,7 +116,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       log: console.error
     });
 
-    // 2. Thử lấy token có sẵn hoặc thực hiện Silent Refresh ngầm
+    // 2. Try to get existing token or execute silent background refresh
     const existingToken = await store.getOrRefreshToken({
       resource: metadata.resource,
       tokenEndpoint: metadata.tokenEndpoint,
@@ -128,12 +128,12 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       return existingToken;
     }
 
-    // 3. Nếu chưa có token hoặc refresh thất bại -> Bắt đầu luồng đăng nhập OAuth PKCE
-    console.error(`[*] Bắt đầu luồng xác thực OAuth cho: ${metadata.resource}`);
+    // 3. No valid token: start interactive OAuth PKCE flow
+    console.error(`[*] Initiating OAuth authentication flow for: ${metadata.resource}`);
     const callbackServer = await startCallbackServer();
     const pkce = generatePKCE();
 
-    // Cập nhật lại client với redirectUri chính xác của cổng vừa mở
+    // Re-resolve client with exact dynamic callback port
     const effectiveClientId = await resolveClientId({
       registrationEndpoint: metadata.registrationEndpoint,
       redirectUri: callbackServer.redirectUri,
@@ -153,11 +153,11 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     if (!options.noBrowser) {
       await openBrowser(authUrl.toString(), console.error);
     } else {
-      console.error(`[*] Hãy mở liên kết sau trong trình duyệt để đăng nhập:\n${authUrl.toString()}\n`);
+      console.error(`[*] Open this URL in your browser to complete authorization:\n${authUrl.toString()}\n`);
     }
 
     const code = await callbackServer.waitForCode();
-    console.error(`[*] Đã nhận Authorization Code. Đang đổi token...`);
+    console.error(`[*] Authorization code received. Exchanging for token...`);
 
     const tokenRes = await fetch(metadata.tokenEndpoint, {
       method: 'POST',
@@ -174,7 +174,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     if (!tokenRes.ok) {
       const errText = await tokenRes.text();
       await callbackServer.close();
-      throw new Error(`Đổi token thất bại (HTTP ${tokenRes.status}): ${errText}`);
+      throw new Error(`Token exchange failed (HTTP ${tokenRes.status}): ${errText}`);
     }
 
     const tokenData = (await tokenRes.json()) as {
@@ -189,7 +189,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       expiresAt: Date.now() + tokenData.expires_in * 1000
     });
 
-    console.error(`[+] Đăng nhập thành công! Token đã được lưu an toàn.`);
+    console.error(`[+] Authentication successful! Credentials securely stored.`);
     await callbackServer.close();
 
     return tokenData.access_token;
@@ -197,11 +197,11 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 
   if (options.loginOnly) {
     await getToken();
-    console.error(`[+] Quá trình đăng nhập hoàn tất (--login-only).`);
+    console.error(`[+] Pre-authentication complete (--login-only).`);
     process.exit(0);
   }
 
-  // Khởi chạy runtime proxy kết nối Stdio <-> Remote HTTP
+  // Launch Stdio runtime proxy loop
   await startProxy({
     remoteUrl,
     getToken,
@@ -210,10 +210,10 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   });
 }
 
-// Nếu file được thực thi trực tiếp qua node/bin
+// When executed directly as a script
 if (process.argv[1]?.endsWith('cli.js') || process.argv[1]?.endsWith('index.js')) {
   main().catch((err) => {
-    console.error(`[-] Lỗi nghiêm trọng: ${err.message}`);
+    console.error(`[-] Fatal error: ${err.message}`);
     process.exit(1);
   });
 }

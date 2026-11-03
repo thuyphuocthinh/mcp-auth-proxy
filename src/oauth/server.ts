@@ -33,7 +33,7 @@ export async function startCallbackServer(port?: number): Promise<CallbackServer
     resolveCode = res;
     rejectCode = rej;
   });
-  // Tránh unhandledRejection khi người dùng attach handler muộn hơn 1 tick
+  // Prevent unhandledRejection if consumer awaits slightly after callback resolves/rejects
   codePromise.catch(() => {});
 
   const server = http.createServer((req, res) => {
@@ -48,11 +48,11 @@ export async function startCallbackServer(port?: number): Promise<CallbackServer
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(`
           <div style="font-family: sans-serif; text-align: center; padding: 40px;">
-            <h1 style="color: #ef4444;">&#10008; Xác thực thất bại!</h1>
+            <h1 style="color: #ef4444;">&#10008; Authentication Failed</h1>
             <p>${errorDesc}</p>
           </div>
         `);
-        rejectCode(new Error(errorDesc || 'OAuth authentication failed'));
+        rejectCode(new Error(`OAuth authentication failed: ${errorDesc}`));
         return;
       }
 
@@ -60,7 +60,8 @@ export async function startCallbackServer(port?: number): Promise<CallbackServer
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(`
           <div style="font-family: sans-serif; text-align: center; padding: 40px;">
-            <h1 style="color: #ef4444;">&#10008; Không tìm thấy Authorization Code!</h1>
+            <h1 style="color: #ef4444;">&#10008; Authorization Code Missing</h1>
+            <p>The authorization server did not return a valid code.</p>
           </div>
         `);
         rejectCode(new Error('Missing authorization code in callback'));
@@ -70,14 +71,14 @@ export async function startCallbackServer(port?: number): Promise<CallbackServer
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(`
         <div style="font-family: sans-serif; text-align: center; padding: 40px;">
-          <h1 style="color: #10b981;">&#10004; Đăng nhập 200Lab thành công!</h1>
-          <p>Token đã được tự động lưu vào hệ thống.</p>
-          <p>Bạn có thể đóng tab này và quay lại ứng dụng.</p>
+          <h1 style="color: #10b981;">&#10004; Authentication Successful!</h1>
+          <p>Credentials have been securely saved to your local environment.</p>
+          <p>You may now close this tab and return to your application.</p>
         </div>
       `);
       resolveCode(code);
     } else {
-      res.writeHead(404);
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Not Found');
     }
   });

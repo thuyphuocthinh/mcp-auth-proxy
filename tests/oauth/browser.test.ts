@@ -3,31 +3,41 @@ import assert from 'node:assert';
 import { getOpenBrowserCommand, openBrowser } from '../../src/oauth/browser.js';
 
 describe('OAuth Browser Opener', () => {
-  const testUrl = 'https://api.200lab.io/oauth/authorize?test=1';
+  const sampleUrl = 'https://api.200lab.io/oauth/authorize?client_id=test&scope=learner#section';
 
-  it('phải tạo command chính xác cho Windows (win32)', () => {
-    const cmd = getOpenBrowserCommand(testUrl, 'win32');
-    assert.strictEqual(cmd, `start "" "${testUrl}"`);
+  it('should generate valid start command on Windows (win32)', () => {
+    const cmd = getOpenBrowserCommand(sampleUrl, 'win32');
+    assert.strictEqual(cmd, `start "" "${sampleUrl}"`);
   });
 
-  it('phải tạo command chính xác cho macOS (darwin)', () => {
-    const cmd = getOpenBrowserCommand(testUrl, 'darwin');
-    assert.strictEqual(cmd, `open "${testUrl}"`);
+  it('should generate valid open command on macOS (darwin)', () => {
+    const cmd = getOpenBrowserCommand(sampleUrl, 'darwin');
+    assert.strictEqual(cmd, `open "${sampleUrl}"`);
   });
 
-  it('phải tạo command chính xác cho Linux', () => {
-    const cmd = getOpenBrowserCommand(testUrl, 'linux');
-    assert.strictEqual(cmd, `xdg-open "${testUrl}"`);
+  it('should generate valid xdg-open command on Linux and other POSIX platforms', () => {
+    assert.strictEqual(getOpenBrowserCommand(sampleUrl, 'linux'), `xdg-open "${sampleUrl}"`);
+    assert.strictEqual(getOpenBrowserCommand(sampleUrl, 'freebsd'), `xdg-open "${sampleUrl}"`);
+    assert.strictEqual(getOpenBrowserCommand(sampleUrl, 'openbsd'), `xdg-open "${sampleUrl}"`);
   });
 
-  it('openBrowser phải in đúng log hướng dẫn dự phòng ra console', async () => {
-    const logs: string[] = [];
-    const mockLog = (msg: string) => logs.push(msg);
+  it('should escape URLs with query parameters properly', () => {
+    const complexUrl = 'https://auth.example.com/oauth/authorize?response_type=code&scope=read%20write&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Fcallback';
+    const cmd = getOpenBrowserCommand(complexUrl, 'win32');
+    assert.ok(cmd.startsWith('start "" "'));
+    assert.ok(cmd.endsWith('"'));
+    assert.ok(cmd.includes('scope=read%20write'));
+  });
 
-    // Dùng fake URL không thực thi ảnh hưởng tới hệ thống
-    await openBrowser('https://example.com/test', mockLog);
+  it('openBrowser should log clear operational and fallback messages to provided logger', async () => {
+    const loggedMessages: string[] = [];
+    const mockLogger = (msg: string) => loggedMessages.push(msg);
 
-    assert.ok(logs.some((l) => l.includes('https://example.com/test')));
-    assert.ok(logs.some((l) => l.includes('Nếu trình duyệt không tự mở')));
+    await openBrowser('https://example.com/test-oauth', mockLogger);
+
+    assert.ok(loggedMessages.length >= 2);
+    assert.ok(loggedMessages.some((m) => m.includes('Automatically opening default browser')));
+    assert.ok(loggedMessages.some((m) => m.includes('https://example.com/test-oauth')));
+    assert.ok(loggedMessages.some((m) => m.includes('If the browser does not open automatically')));
   });
 });

@@ -3,41 +3,71 @@ import assert from 'node:assert';
 import net from 'node:net';
 import { getAvailablePort, startCallbackServer } from '../../src/oauth/server.js';
 
-describe('OAuth Callback Server', () => {
-  it('phải tự động tìm cổng rảnh khi cổng chỉ định bị chiếm', async () => {
-    const testPort = 19876;
-    const blocker = net.createServer();
-    await new Promise<void>((r) => blocker.listen(testPort, () => r()));
+describe('OAuth Callback Server & Dynamic Port Selection', () => {
+  it('should find next available port when the initial port is busy', async () => {
+    const testPort = 19123;
+    const blockerServer = net.createServer();
+    await new Promise<void>((resolve) => blockerServer.listen(testPort, () => resolve()));
 
-    const available = await getAvailablePort(testPort);
-    assert.strictEqual(available, testPort + 1);
+    const nextPort = await getAvailablePort(testPort);
+    assert.strictEqual(nextPort, testPort + 1, 'Should increment to next available port');
 
-    await new Promise<void>((r) => blocker.close(() => r()));
+    await new Promise<void>((resolve) => blockerServer.close(() => resolve()));
   });
 
-  it('phải nhận và parse chính xác Authorization Code từ URL callback', async () => {
+  it('should receive authorization code and serve success HTML page on valid callback', async () => {
     const callbackServer = await startCallbackServer();
-    const testCode = 'auth_code_xyz123';
+    const expectedCode = 'auth_code_secret_xyz_987';
 
-    // Giả lập browser redirect về callback
-    const res = await fetch(`${callbackServer.redirectUri}?code=${testCode}`);
+    const codePromise = callbackServer.waitForCode();
+    const res = await fetch(`${callbackServer.redirectUri}?code=${expectedCode}`);
+
     assert.strictEqual(res.status, 200);
+    const htmlBody = await res.text();
+    assert.ok(htmlBody.includes('Authentication Successful!'));
 
-    const receivedCode = await callbackServer.waitForCode();
-    assert.strictEqual(receivedCode, testCode);
+    const receivedCode = await codePromise;
+    assert.strictEqual(receivedCode, expectedCode);
 
     await callbackServer.close();
   });
 
-  it('phải trả về lỗi 400 nếu callback chứa tham số error', async () => {
+  it('should handle OAuth error redirect with 400 and reject promise with error description', async () => {
     const callbackServer = await startCallbackServer();
     const codePromise = callbackServer.waitForCode();
 
-    // Giả lập OAuth error redirect
-    const res = await fetch(`${callbackServer.redirectUri}?error=access_denied&error_description=User+cancelled`);
+    const res = await fetch(
+      `${callbackServer.redirectUri}?error=access_denied&error_description=User+declined+authorization`
+    );
+
+    assert.strictEqual(res.status, 400);
+    const htmlBody = await res.text();
+    assert.ok(htmlBody.includes('Authentication Failed'));
+    assert.ok(htmlBody.includes('User declined authorization'));
+
+    await assert.rejects(codePromise, /User declined authorization/);
+    await callbackServer.close();
+  });
+
+  it('should reject when callback is invoked without authorization code or error parameters', async () => {
+    const callbackServer = await startCallbackServer();
+    const codePromise = callbackServer.waitForCode();
+
+    const res = await fetch(`${callbackServer.redirectUri}`);
     assert.strictEqual(res.status, 400);
 
-    await assert.rejects(codePromise, /User cancelled/);
+    const htmlBody = await res.text();
+    assert.ok(htmlBody.includes('Authorization Code Missing'));
+
+    await assert.rejects(codePromise, /Missing authorization code in callback/);
+    await callbackServer.close();
+  });
+
+  it('should return 404 for unhandled routes', async () => {
+    const callbackServer = await startCallbackServer();
+
+    const res = await fetch(`http://localhost:${callbackServer.port}/non-existent-route`);
+    assert.strictEqual(res.status, 404);
 
     await callbackServer.close();
   });

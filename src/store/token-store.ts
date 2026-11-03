@@ -31,7 +31,7 @@ export class TokenStore {
   }
 
   isExpiringSoon(token: StoredToken, bufferMs = 300_000): boolean {
-    // Mặc định buffer 5 phút (300,000ms)
+    // Default buffer: 5 minutes (300,000ms)
     return Date.now() >= token.expiresAt - bufferMs;
   }
 
@@ -46,12 +46,12 @@ export class TokenStore {
     const current = this.getToken(resource);
 
     if (!current?.refreshToken) {
-      log(`[-] Không tìm thấy refresh_token cho resource: ${resource}`);
+      log(`[-] No refresh_token available for resource: ${resource}`);
       return null;
     }
 
     try {
-      log(`[*] Đang thực hiện Silent Refresh ngầm cho token...`);
+      log(`[*] Performing silent background token refresh...`);
       const response = await fetchFn(tokenEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -64,7 +64,7 @@ export class TokenStore {
 
       if (!response.ok) {
         const errorText = await response.text();
-        log(`[-] Silent Refresh thất bại (HTTP ${response.status}): ${errorText}`);
+        log(`[-] Silent token refresh failed (HTTP ${response.status}): ${errorText}`);
         return null;
       }
 
@@ -78,17 +78,17 @@ export class TokenStore {
 
       const updatedToken: StoredToken = {
         accessToken: data.access_token,
-        refreshToken: data.refresh_token || current.refreshToken, // Dùng token mới nếu server cấp xoay vòng
+        refreshToken: data.refresh_token || current.refreshToken,
         expiresAt: Date.now() + data.expires_in * 1000,
         tokenType: data.token_type || current.tokenType,
         scope: data.scope || current.scope
       };
 
       this.saveToken(resource, updatedToken);
-      log(`[+] Silent Refresh thành công! Token mới có hiệu lực trong ${data.expires_in}s.`);
+      log(`[+] Token refreshed successfully! Valid for ${data.expires_in}s.`);
       return updatedToken.accessToken;
     } catch (err: any) {
-      log(`[-] Lỗi kết nối khi Silent Refresh: ${err.message}`);
+      log(`[-] Network error during silent token refresh: ${err.message}`);
       return null;
     }
   }
@@ -107,12 +107,12 @@ export class TokenStore {
       return null;
     }
 
-    // Nếu token vẫn còn hạn trên 5 phút, tái sử dụng luôn
+    // Still valid for more than buffer duration
     if (!this.isExpiringSoon(current)) {
       return current.accessToken;
     }
 
-    // Nếu sắp hết hạn (< 5 phút), âm thầm refresh ngầm
+    // Expiring soon: silently refresh if refresh_token exists
     if (current.refreshToken) {
       const refreshed = await this.refreshToken(options);
       if (refreshed) {
@@ -120,7 +120,7 @@ export class TokenStore {
       }
     }
 
-    // Nếu không refresh được nhưng access_token thực tế chưa hết hạn (trong khoảng 5 phút đệm)
+    // If refresh failed but token is technically not past absolute expiration timestamp
     if (Date.now() < current.expiresAt) {
       return current.accessToken;
     }

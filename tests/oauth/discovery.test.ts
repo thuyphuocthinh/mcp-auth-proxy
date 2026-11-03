@@ -3,49 +3,56 @@ import assert from 'node:assert';
 import { extractResourceMetadataUrl, discoverOAuth } from '../../src/oauth/discovery.js';
 
 describe('OAuth Metadata Discovery', () => {
-  it('phải trích xuất chính xác resource_metadata từ WWW-Authenticate header', () => {
+  it('should extract resource_metadata URL from valid WWW-Authenticate Bearer header', () => {
     const header = 'Bearer resource_metadata="https://mcp.200lab.io/.well-known/oauth-protected-resource/mcp/learner"';
-    const url = extractResourceMetadataUrl(header);
-    assert.strictEqual(url, 'https://mcp.200lab.io/.well-known/oauth-protected-resource/mcp/learner');
+    const extracted = extractResourceMetadataUrl(header);
+    assert.strictEqual(extracted, 'https://mcp.200lab.io/.well-known/oauth-protected-resource/mcp/learner');
   });
 
-  it('phải trả về null nếu header không hợp lệ', () => {
+  it('should be case-insensitive for Bearer and resource_metadata tokens', () => {
+    const header = 'bearer RESOURCE_METADATA="https://mcp.example.com/meta"';
+    const extracted = extractResourceMetadataUrl(header);
+    assert.strictEqual(extracted, 'https://mcp.example.com/meta');
+  });
+
+  it('should return null for headers lacking resource_metadata', () => {
     assert.strictEqual(extractResourceMetadataUrl(null), null);
-    assert.strictEqual(extractResourceMetadataUrl('Basic realm="Access"'), null);
+    assert.strictEqual(extractResourceMetadataUrl(''), null);
+    assert.strictEqual(extractResourceMetadataUrl('Bearer realm="OAuth"'), null);
+    assert.strictEqual(extractResourceMetadataUrl('Basic realm="Restricted"'), null);
   });
 
-  it('phải thực hiện toàn bộ luồng discovery và trả về đầy đủ endpoints', async () => {
-    // Mock fetchFn để test toàn bộ luồng mà không cần gọi mạng
-    const mockFetch: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-      const urlStr = input.toString();
+  it('should execute full discovery handshake and return all resolved endpoints', async () => {
+    const mockFetch: typeof fetch = async (input: RequestInfo | URL) => {
+      const url = input.toString();
 
-      if (urlStr === 'https://mcp.example.com/learner') {
+      if (url === 'https://mcp.company.com/service') {
         return new Response('Unauthorized', {
           status: 401,
           headers: {
-            'WWW-Authenticate': 'Bearer resource_metadata="https://mcp.example.com/.well-known/resource"'
+            'WWW-Authenticate': 'Bearer resource_metadata="https://mcp.company.com/.well-known/resource"'
           }
         });
       }
 
-      if (urlStr === 'https://mcp.example.com/.well-known/resource') {
+      if (url === 'https://mcp.company.com/.well-known/resource') {
         return new Response(
           JSON.stringify({
-            resource: 'https://mcp.example.com/learner',
-            authorization_servers: ['https://api.example.com'],
-            scopes_supported: ['learner']
+            resource: 'https://mcp.company.com/service',
+            authorization_servers: ['https://auth.company.com/'],
+            scopes_supported: ['read', 'write']
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
       }
 
-      if (urlStr === 'https://api.example.com/.well-known/oauth-authorization-server') {
+      if (url === 'https://auth.company.com/.well-known/oauth-authorization-server') {
         return new Response(
           JSON.stringify({
-            issuer: 'https://api.example.com',
-            authorization_endpoint: 'https://api.example.com/oauth/authorize',
-            token_endpoint: 'https://api.example.com/oauth/token',
-            registration_endpoint: 'https://api.example.com/oauth/register'
+            issuer: 'https://auth.company.com',
+            authorization_endpoint: 'https://auth.company.com/oauth/authorize',
+            token_endpoint: 'https://auth.company.com/oauth/token',
+            registration_endpoint: 'https://auth.company.com/oauth/register'
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
@@ -54,12 +61,65 @@ describe('OAuth Metadata Discovery', () => {
       return new Response('Not Found', { status: 404 });
     };
 
-    const metadata = await discoverOAuth('https://mcp.example.com/learner', mockFetch);
+    const metadata = await discoverOAuth('https://mcp.company.com/service', mockFetch);
 
-    assert.strictEqual(metadata.resource, 'https://mcp.example.com/learner');
-    assert.strictEqual(metadata.authorizationEndpoint, 'https://api.example.com/oauth/authorize');
-    assert.strictEqual(metadata.tokenEndpoint, 'https://api.example.com/oauth/token');
-    assert.strictEqual(metadata.registrationEndpoint, 'https://api.example.com/oauth/register');
-    assert.deepStrictEqual(metadata.scopes, ['learner']);
+    assert.strictEqual(metadata.resource, 'https://mcp.company.com/service');
+    assert.strictEqual(metadata.authorizationEndpoint, 'https://auth.company.com/oauth/authorize');
+    assert.strictEqual(metadata.tokenEndpoint, 'https://auth.company.com/oauth/token');
+    assert.strictEqual(metadata.registrationEndpoint, 'https://auth.company.com/oauth/register');
+    assert.deepStrictEqual(metadata.scopes, ['read', 'write']);
+  });
+
+  it('should throw an informative error when remote server does not provide 401 WWW-Authenticate header', async () => {
+    const mockFetch: typeof fetch = async () => new Response('OK', { status: 200 });
+
+    await assert.rejects(
+      async () => {
+        await discoverOAuth('https://mcp.example.com', mockFetch);
+      },
+      /Missing 'WWW-Authenticate: Bearer resource_metadata="\.\.\."' header/
+    );
+  });
+
+  it('should throw an error when Resource Metadata returns HTTP error', async () => {
+    const mockFetch: typeof fetch = async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes('probe')) {
+        return new Response('Unauthorized', {
+          status: 401,
+          headers: {
+            'WWW-Authenticate': 'Bearer resource_metadata="https://mcp.example.com/bad-meta"'
+          }
+        });
+      }
+      return new Response('Not Found', { status: 404 });
+    };
+
+    await assert.rejects(
+      async () => {
+        await discoverOAuth('https://mcp.example.com/probe', mockFetch);
+      },
+      /Failed to fetch Resource Metadata/
+    );
+  });
+
+  it('should throw an error when Resource Metadata lacks authorization_servers', async () => {
+    const mockFetch: typeof fetch = async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes('probe')) {
+        return new Response('Unauthorized', {
+          status: 401,
+          headers: { 'WWW-Authenticate': 'Bearer resource_metadata="https://mcp.example.com/meta"' }
+        });
+      }
+      return new Response(JSON.stringify({ resource: 'test' }), { status: 200 });
+    };
+
+    await assert.rejects(
+      async () => {
+        await discoverOAuth('https://mcp.example.com/probe', mockFetch);
+      },
+      /Resource Metadata does not contain valid authorization_servers/
+    );
   });
 });

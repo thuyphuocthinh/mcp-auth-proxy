@@ -16,21 +16,21 @@ export async function discoverOAuth(
   remoteUrl: string,
   fetchFn: typeof fetch = fetch
 ): Promise<OAuthMetadata> {
-  // Bước 1: Thăm dò 401 để lấy WWW-Authenticate header
+  // Step 1: Probe remote endpoint for 401 and WWW-Authenticate header
   const probeResponse = await fetchFn(remoteUrl, { method: 'GET' });
   const authHeader = probeResponse.headers.get('www-authenticate');
 
   const metadataUrl = extractResourceMetadataUrl(authHeader);
   if (!metadataUrl) {
     throw new Error(
-      `Không tìm thấy header 'WWW-Authenticate: Bearer resource_metadata="..."' từ ${remoteUrl}`
+      `Missing 'WWW-Authenticate: Bearer resource_metadata="..."' header from ${remoteUrl}`
     );
   }
 
-  // Bước 2: Đọc thông tin Protected Resource Metadata (RFC 8707)
+  // Step 2: Retrieve Protected Resource Metadata (RFC 8707)
   const resourceRes = await fetchFn(metadataUrl);
   if (!resourceRes.ok) {
-    throw new Error(`Lỗi đọc Resource Metadata từ ${metadataUrl}: HTTP ${resourceRes.status}`);
+    throw new Error(`Failed to fetch Resource Metadata from ${metadataUrl}: HTTP ${resourceRes.status}`);
   }
   const resourceData = (await resourceRes.json()) as {
     resource?: string;
@@ -40,14 +40,14 @@ export async function discoverOAuth(
 
   const authServer = resourceData.authorization_servers?.[0];
   if (!authServer) {
-    throw new Error(`Resource Metadata không chứa authorization_servers hợp lệ`);
+    throw new Error(`Resource Metadata does not contain valid authorization_servers`);
   }
 
-  // Bước 3: Đọc Authorization Server Metadata (RFC 8414)
+  // Step 3: Retrieve Authorization Server Metadata (RFC 8414)
   const serverMetaUrl = `${authServer.replace(/\/$/, '')}/.well-known/oauth-authorization-server`;
   const serverRes = await fetchFn(serverMetaUrl);
   if (!serverRes.ok) {
-    throw new Error(`Lỗi đọc Auth Server Metadata từ ${serverMetaUrl}: HTTP ${serverRes.status}`);
+    throw new Error(`Failed to fetch Auth Server Metadata from ${serverMetaUrl}: HTTP ${serverRes.status}`);
   }
 
   const serverData = (await serverRes.json()) as {
@@ -57,7 +57,7 @@ export async function discoverOAuth(
   };
 
   if (!serverData.authorization_endpoint || !serverData.token_endpoint) {
-    throw new Error(`Auth Server Metadata thiếu authorization_endpoint hoặc token_endpoint`);
+    throw new Error(`Auth Server Metadata is missing authorization_endpoint or token_endpoint`);
   }
 
   return {

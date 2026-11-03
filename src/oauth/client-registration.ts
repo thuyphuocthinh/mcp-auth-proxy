@@ -22,13 +22,13 @@ export async function registerDynamicClient(
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(
-      `Đăng ký Client động thất bại (HTTP ${response.status}): ${errorText}`
+      `Dynamic Client Registration failed (HTTP ${response.status}): ${errorText}`
     );
   }
 
   const data = (await response.json()) as ClientRegistrationResponse;
   if (!data.client_id) {
-    throw new Error(`Phản hồi đăng ký không chứa client_id`);
+    throw new Error(`Registration response missing client_id`);
   }
 
   return data.client_id;
@@ -43,19 +43,17 @@ export async function resolveClientId(options: {
 }): Promise<string> {
   const { registrationEndpoint, redirectUri, explicitClientId, fetchFn = fetch, log = console.log } = options;
 
-  // Nếu người dùng đã truyền --client-id, ưu tiên sử dụng luôn
   if (explicitClientId) {
-    log(`[*] Sử dụng Client ID được cấu hình: ${explicitClientId}`);
+    log(`[*] Using configured Client ID: ${explicitClientId}`);
     return explicitClientId;
   }
 
-  // Nếu server hỗ trợ Dynamic Client Registration (RFC 7591)
   if (registrationEndpoint) {
-    log(`[*] Đang tự động đăng ký Dynamic Client ID với: ${registrationEndpoint}`);
+    log(`[*] Registering dynamic Client ID with: ${registrationEndpoint}`);
     return await registerDynamicClient(registrationEndpoint, redirectUri, 'mcp-oauth-proxy', fetchFn);
   }
 
   throw new Error(
-    `Server không hỗ trợ Dynamic Client Registration (RFC 7591). Vui lòng cung cấp tham số --client-id <id>`
+    `Server does not support Dynamic Client Registration (RFC 7591). Please provide an explicit --client-id <id>`
   );
 }

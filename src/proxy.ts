@@ -11,8 +11,8 @@ export interface ProxyOptions {
 }
 
 /**
- * Trích xuất các message JSON-RPC từ response dạng SSE (text/event-stream)
- * Format chuẩn của MCP Streamable HTTP:
+ * Extracts JSON-RPC message payloads from SSE (text/event-stream) response chunks.
+ * Conforms to standard Model Context Protocol (MCP) Streamable HTTP specification:
  * event: message
  * data: {"jsonrpc":"2.0", ...}
  */
@@ -30,7 +30,7 @@ export function extractJsonRpcFromSse(responseText: string): string[] {
     }
   }
 
-  // Nếu server trả về JSON thuần không qua bọc SSE
+  // Fallback if server returned raw non-SSE JSON
   if (results.length === 0 && responseText.trim().startsWith('{')) {
     results.push(responseText.trim());
   }
@@ -39,7 +39,7 @@ export function extractJsonRpcFromSse(responseText: string): string[] {
 }
 
 /**
- * Chuyển tiếp 1 dòng JSON-RPC từ Stdio sang Remote HTTP MCP Server
+ * Forwards a single JSON-RPC line from Stdio to the Remote HTTP MCP Server.
  */
 export async function forwardJsonRpc(options: {
   line: string;
@@ -54,7 +54,7 @@ export async function forwardJsonRpc(options: {
     const parsed = JSON.parse(line);
     requestId = parsed.id ?? null;
   } catch {
-    // Không phải JSON hợp lệ
+    // Malformed JSON input from client
   }
 
   try {
@@ -76,7 +76,7 @@ export async function forwardJsonRpc(options: {
           id: requestId,
           error: {
             code: -32603,
-            message: `Remote MCP server trả về HTTP ${response.status}: ${errorText}`
+            message: `Remote MCP server returned HTTP ${response.status}: ${errorText}`
           }
         })
       ];
@@ -91,7 +91,7 @@ export async function forwardJsonRpc(options: {
         id: requestId,
         error: {
           code: -32603,
-          message: `Lỗi kết nối tới Remote MCP: ${err.message}`
+          message: `Failed to connect to remote MCP server: ${err.message}`
         }
       })
     ];
@@ -99,8 +99,8 @@ export async function forwardJsonRpc(options: {
 }
 
 /**
- * Khởi chạy vòng lặp Stdio Proxy:
- * Đọc từng dòng từ stdin, lấy token hợp lệ, chuyển tiếp HTTP và trả về stdout
+ * Starts Stdio bidirectional proxy loop.
+ * Reads newline-delimited JSON-RPC from stdin, attaches valid token, and writes to stdout.
  */
 export async function startProxy(options: ProxyOptions): Promise<void> {
   const {
@@ -144,7 +144,7 @@ export async function startProxy(options: ProxyOptions): Promise<void> {
         output.write(res + '\n');
       }
     } catch (err: any) {
-      logError(`[-] Lỗi proxy: ${err.message}`);
+      logError(`[-] Proxy error: ${err.message}`);
       let requestId: string | number | null = null;
       try {
         const parsed = JSON.parse(line);

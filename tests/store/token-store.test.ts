@@ -5,68 +5,90 @@ import path from 'node:path';
 import os from 'node:os';
 import { TokenStore } from '../../src/store/token-store.js';
 
-describe('TokenStore & Silent Refresh', () => {
-  const testDir = path.join(os.tmpdir(), `mcp-oauth-test-${Date.now()}`);
-  const testFile = path.join(testDir, 'tokens.json');
+describe('TokenStore & Silent Refresh Logic', () => {
+  const tempDir = path.join(os.tmpdir(), `mcp-token-store-test-${Date.now()}-${Math.random()}`);
+  const storeFilePath = path.join(tempDir, 'tokens.json');
   let store: TokenStore;
 
   beforeEach(() => {
-    fs.mkdirSync(testDir, { recursive: true });
-    store = new TokenStore(testFile);
+    fs.mkdirSync(tempDir, { recursive: true });
+    store = new TokenStore(storeFilePath);
   });
 
   afterEach(() => {
-    fs.rmSync(testDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('phải lưu trữ và đọc lại token chính xác', () => {
-    store.saveToken('https://mcp.200lab.io/mcp/learner', {
-      accessToken: 'acc_token_123',
-      refreshToken: 'ref_token_456',
+  it('should persist and retrieve tokens across different resources independently', () => {
+    store.saveToken('https://mcp.alpha.com', {
+      accessToken: 'token_alpha',
+      refreshToken: 'refresh_alpha',
       expiresAt: Date.now() + 3600_000,
       tokenType: 'Bearer',
-      scope: 'learner'
+      scope: 'read'
     });
 
-    const token = store.getToken('https://mcp.200lab.io/mcp/learner');
-    assert.ok(token);
-    assert.strictEqual(token.accessToken, 'acc_token_123');
-    assert.strictEqual(token.refreshToken, 'ref_token_456');
-    assert.strictEqual(token.scope, 'learner');
+    store.saveToken('https://mcp.beta.com', {
+      accessToken: 'token_beta',
+      expiresAt: Date.now() + 7200_000
+    });
+
+    const alpha = store.getToken('https://mcp.alpha.com');
+    const beta = store.getToken('https://mcp.beta.com');
+    const gamma = store.getToken('https://mcp.gamma.com');
+
+    assert.strictEqual(alpha?.accessToken, 'token_alpha');
+    assert.strictEqual(alpha?.refreshToken, 'refresh_alpha');
+    assert.strictEqual(alpha?.scope, 'read');
+
+    assert.strictEqual(beta?.accessToken, 'token_beta');
+    assert.strictEqual(beta?.refreshToken, undefined);
+
+    assert.strictEqual(gamma, null);
   });
 
-  it('phải phát hiện token sắp hết hạn trong khoảng đệm 5 phút', () => {
-    const expiringSoon = {
-      accessToken: 'token_exp',
-      expiresAt: Date.now() + 180_000 // Còn 3 phút
-    };
-    assert.strictEqual(store.isExpiringSoon(expiringSoon), true);
+  it('should handle missing or corrupted JSON file gracefully without throwing', () => {
+    const freshStore = new TokenStore(path.join(tempDir, 'does-not-exist.json'));
+    assert.strictEqual(freshStore.getToken('any'), null);
 
-    const stillValid = {
-      accessToken: 'token_valid',
-      expiresAt: Date.now() + 600_000 // Còn 10 phút
-    };
-    assert.strictEqual(store.isExpiringSoon(stillValid), false);
+    const corruptPath = path.join(tempDir, 'corrupt.json');
+    fs.writeFileSync(corruptPath, '{ malformed json: not valid !!');
+    const corruptStore = new TokenStore(corruptPath);
+    assert.strictEqual(corruptStore.getToken('any'), null);
   });
 
-  it('phải gọi Silent Refresh và tự động cập nhật token mới vào storage', async () => {
-    const resource = 'https://mcp.example.com/learner';
+  it('should detect tokens expiring within customizable buffer threshold', () => {
+    const now = Date.now();
+
+    const expiringIn3Min = { accessToken: 'a', expiresAt: now + 180_000 };
+    const expiringIn7Min = { accessToken: 'b', expiresAt: now + 420_000 };
+
+    // Default 5-minute buffer (300,000ms)
+    assert.strictEqual(store.isExpiringSoon(expiringIn3Min), true);
+    assert.strictEqual(store.isExpiringSoon(expiringIn7Min), false);
+
+    // Custom 10-minute buffer (600,000ms)
+    assert.strictEqual(store.isExpiringSoon(expiringIn7Min, 600_000), true);
+  });
+
+  it('refreshToken should exchange refresh_token for a new access_token and update storage', async () => {
+    const resource = 'https://mcp.example.com';
     const tokenEndpoint = 'https://api.example.com/oauth/token';
-    const clientId = 'client_123';
+    const clientId = 'client_xyz';
 
     store.saveToken(resource, {
-      accessToken: 'old_access_token',
-      refreshToken: 'valid_refresh_token',
-      expiresAt: Date.now() + 60_000 // Còn 1 phút
+      accessToken: 'stale_token',
+      refreshToken: 'current_refresh_token',
+      expiresAt: Date.now() + 60_000
     });
 
-    let capturedBody: any;
+    let requestBody: URLSearchParams | undefined;
     const mockFetch: typeof fetch = async (_input, init) => {
-      capturedBody = new URLSearchParams(init?.body as string);
+      requestBody = new URLSearchParams(init?.body as string);
       return new Response(
         JSON.stringify({
-          access_token: 'new_refreshed_access_token',
-          refresh_token: 'new_rotated_refresh_token',
+          access_token: 'freshly_refreshed_access_token',
+          refresh_token: 'rotated_refresh_token',
           expires_in: 3600,
           token_type: 'Bearer'
         }),
@@ -82,72 +104,93 @@ describe('TokenStore & Silent Refresh', () => {
       log: () => {}
     });
 
-    assert.strictEqual(newAccessToken, 'new_refreshed_access_token');
-    assert.strictEqual(capturedBody.get('grant_type'), 'refresh_token');
-    assert.strictEqual(capturedBody.get('refresh_token'), 'valid_refresh_token');
-    assert.strictEqual(capturedBody.get('client_id'), clientId);
+    assert.strictEqual(newAccessToken, 'freshly_refreshed_access_token');
+    assert.strictEqual(requestBody?.get('grant_type'), 'refresh_token');
+    assert.strictEqual(requestBody?.get('refresh_token'), 'current_refresh_token');
+    assert.strictEqual(requestBody?.get('client_id'), clientId);
 
-    // Kiểm tra token trong file đã được cập nhật
     const updated = store.getToken(resource);
-    assert.strictEqual(updated?.accessToken, 'new_refreshed_access_token');
-    assert.strictEqual(updated?.refreshToken, 'new_rotated_refresh_token');
+    assert.strictEqual(updated?.accessToken, 'freshly_refreshed_access_token');
+    assert.strictEqual(updated?.refreshToken, 'rotated_refresh_token');
     assert.ok(updated.expiresAt > Date.now() + 3500_000);
   });
 
-  it('getOrRefreshToken phải tự động refresh khi token sắp hết hạn', async () => {
-    const resource = 'https://mcp.example.com/learner';
-    const tokenEndpoint = 'https://api.example.com/oauth/token';
-    const clientId = 'client_123';
-
+  it('refreshToken should return null when refresh_token is missing or revoked', async () => {
+    const resource = 'https://mcp.example.com';
     store.saveToken(resource, {
-      accessToken: 'old_token',
-      refreshToken: 'my_refresh',
-      expiresAt: Date.now() + 100_000 // Sắp hết hạn (< 5 phút)
+      accessToken: 'token_no_refresh',
+      expiresAt: Date.now() + 60_000
     });
 
-    const mockFetch: typeof fetch = async () => {
-      return new Response(
-        JSON.stringify({
-          access_token: 'brand_new_token',
-          expires_in: 3600
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      );
-    };
-
-    const result = await store.getOrRefreshToken({
+    const res1 = await store.refreshToken({
       resource,
-      tokenEndpoint,
-      clientId,
-      fetchFn: mockFetch,
+      tokenEndpoint: 'https://auth.com/token',
+      clientId: 'id',
       log: () => {}
     });
+    assert.strictEqual(res1, null, 'Should return null when token has no refresh_token');
 
-    assert.strictEqual(result, 'brand_new_token');
-  });
-
-  it('getOrRefreshToken phải tái sử dụng token ngay lập tức nếu còn hạn trên 5 phút mà không gọi fetch', async () => {
-    const resource = 'https://mcp.example.com/learner';
+    // Server returns 400 invalid_grant
     store.saveToken(resource, {
-      accessToken: 'good_token',
-      expiresAt: Date.now() + 1800_000 // Còn tận 30 phút
+      accessToken: 'token',
+      refreshToken: 'bad_refresh',
+      expiresAt: Date.now() + 60_000
     });
 
-    let fetchCalled = false;
+    const mockFetch400: typeof fetch = async () => new Response('invalid_grant', { status: 400 });
+    const res2 = await store.refreshToken({
+      resource,
+      tokenEndpoint: 'https://auth.com/token',
+      clientId: 'id',
+      fetchFn: mockFetch400,
+      log: () => {}
+    });
+    assert.strictEqual(res2, null, 'Should return null when server rejects refresh request');
+  });
+
+  it('getOrRefreshToken should return valid token without network call if not expiring soon', async () => {
+    const resource = 'https://mcp.example.com';
+    store.saveToken(resource, {
+      accessToken: 'long_lived_token',
+      expiresAt: Date.now() + 1800_000 // 30 mins
+    });
+
+    let networkHit = false;
     const mockFetch: typeof fetch = async () => {
-      fetchCalled = true;
+      networkHit = true;
       return new Response('{}');
     };
 
-    const result = await store.getOrRefreshToken({
+    const token = await store.getOrRefreshToken({
       resource,
-      tokenEndpoint: 'https://any.com',
-      clientId: 'any',
+      tokenEndpoint: 'https://auth.com/token',
+      clientId: 'id',
       fetchFn: mockFetch,
       log: () => {}
     });
 
-    assert.strictEqual(result, 'good_token');
-    assert.strictEqual(fetchCalled, false, 'Không được gọi fetch khi token còn hạn dài');
+    assert.strictEqual(token, 'long_lived_token');
+    assert.strictEqual(networkHit, false, 'Must not make HTTP request when token is still valid');
+  });
+
+  it('getOrRefreshToken should fallback to unexpired token if silent refresh fails', async () => {
+    const resource = 'https://mcp.example.com';
+    store.saveToken(resource, {
+      accessToken: 'still_working_for_2_minutes',
+      refreshToken: 'broken_refresh',
+      expiresAt: Date.now() + 120_000 // 2 mins remaining (< 5m buffer, but > 0s)
+    });
+
+    const mockFailingFetch: typeof fetch = async () => new Response('Server Error', { status: 500 });
+
+    const token = await store.getOrRefreshToken({
+      resource,
+      tokenEndpoint: 'https://auth.com/token',
+      clientId: 'id',
+      fetchFn: mockFailingFetch,
+      log: () => {}
+    });
+
+    assert.strictEqual(token, 'still_working_for_2_minutes', 'Should fallback to remaining validity');
   });
 });
