@@ -193,4 +193,79 @@ describe('TokenStore & Silent Refresh Logic', () => {
 
     assert.strictEqual(token, 'still_working_for_2_minutes', 'Should fallback to remaining validity');
   });
+
+  it('refreshToken should prioritize persisted clientId over options.clientId and preserve it in storage', async () => {
+    const resource = 'https://mcp.bound-client.com';
+    const tokenEndpoint = 'https://api.bound-client.com/oauth/token';
+
+    store.saveToken(resource, {
+      accessToken: 'old_token',
+      refreshToken: 'bound_refresh_token',
+      expiresAt: Date.now() + 60_000,
+      clientId: 'original_persisted_client_id'
+    });
+
+    let sentClientId: string | null = null;
+    const mockFetch: typeof fetch = async (_input, init) => {
+      const params = new URLSearchParams(init?.body as string);
+      sentClientId = params.get('client_id');
+      return new Response(
+        JSON.stringify({
+          access_token: 'new_token_refreshed',
+          expires_in: 3600
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    };
+
+    // Even if options passes a different clientId, stored clientId MUST take precedence!
+    const result = await store.refreshToken({
+      resource,
+      tokenEndpoint,
+      clientId: 'different_new_client_id',
+      fetchFn: mockFetch,
+      log: () => {}
+    });
+
+    assert.strictEqual(result, 'new_token_refreshed');
+    assert.strictEqual(sentClientId, 'original_persisted_client_id', 'Must use persisted clientId tied to refresh token');
+
+    const updated = store.getToken(resource);
+    assert.strictEqual(updated?.clientId, 'original_persisted_client_id', 'Must preserve persisted clientId after refresh');
+  });
+
+  it('getOrRefreshToken should use stored clientId during silent refresh when clientId option is omitted', async () => {
+    const resource = 'https://mcp.silent.com';
+    const tokenEndpoint = 'https://api.silent.com/oauth/token';
+
+    store.saveToken(resource, {
+      accessToken: 'expiring_token',
+      refreshToken: 'my_refresh_token',
+      expiresAt: Date.now() + 60_000, // < 5m buffer
+      clientId: 'stored_pkce_client_id'
+    });
+
+    let sentClientId: string | null = null;
+    const mockFetch: typeof fetch = async (_input, init) => {
+      const params = new URLSearchParams(init?.body as string);
+      sentClientId = params.get('client_id');
+      return new Response(
+        JSON.stringify({
+          access_token: 'refreshed_access_token',
+          expires_in: 7200
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    };
+
+    const token = await store.getOrRefreshToken({
+      resource,
+      tokenEndpoint,
+      fetchFn: mockFetch,
+      log: () => {}
+    });
+
+    assert.strictEqual(token, 'refreshed_access_token');
+    assert.strictEqual(sentClientId, 'stored_pkce_client_id');
+  });
 });

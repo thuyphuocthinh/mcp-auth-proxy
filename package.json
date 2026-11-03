@@ -1,6 +1,6 @@
 {
   "name": "@thuyphuocthinh/mcp-auth-proxy",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Zero-config Stdio to Streamable HTTP MCP runtime proxy with automatic OAuth PKCE & silent refresh",
   "type": "module",
   "main": "./dist/src/index.js",

@@ -55,4 +55,22 @@ describe('CLI Argument Parser', () => {
     assert.strictEqual(options.clientId, 'test_id');
     assert.strictEqual(options.noBrowser, true);
   });
+
+  it('should parse login subcommand and set command to login', () => {
+    const options = parseArgs(['login', 'https://mcp.200lab.io/mcp/learner']);
+    assert.strictEqual(options.command, 'login');
+    assert.strictEqual(options.remoteUrl, 'https://mcp.200lab.io/mcp/learner');
+  });
+
+  it('should parse --auto-browser flag', () => {
+    const options = parseArgs(['https://mcp.example.com', '--auto-browser']);
+    assert.strictEqual(options.command, 'proxy');
+    assert.strictEqual(options.autoBrowser, true);
+  });
+
+  it('should treat --login-only as command login', () => {
+    const options = parseArgs(['https://mcp.example.com', '--login-only']);
+    assert.strictEqual(options.command, 'login');
+    assert.strictEqual(options.loginOnly, true);
+  });
 });

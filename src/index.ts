@@ -6,13 +6,15 @@ import { startCallbackServer } from './oauth/server.js';
 import { TokenStore } from './store/token-store.js';
 import { startProxy } from './proxy.js';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.1';
 
 export interface CliOptions {
+  command: 'proxy' | 'login';
   remoteUrl?: string;
   clientId?: string;
   headers: Record<string, string>;
   noBrowser: boolean;
+  autoBrowser: boolean;
   loginOnly: boolean;
   help: boolean;
   version: boolean;
@@ -20,12 +22,16 @@ export interface CliOptions {
 
 export function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
+    command: 'proxy',
     headers: {},
     noBrowser: false,
+    autoBrowser: false,
     loginOnly: false,
     help: false,
     version: false
   };
+
+  const positional: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -36,8 +42,11 @@ export function parseArgs(args: string[]): CliOptions {
       options.version = true;
     } else if (arg === '--no-browser') {
       options.noBrowser = true;
+    } else if (arg === '--auto-browser') {
+      options.autoBrowser = true;
     } else if (arg === '--login-only') {
       options.loginOnly = true;
+      options.command = 'login';
     } else if (arg === '--client-id' && i + 1 < args.length) {
       options.clientId = args[++i];
     } else if (arg === '--header' && i + 1 < args.length) {
@@ -48,8 +57,19 @@ export function parseArgs(args: string[]): CliOptions {
         const value = headerStr.substring(colonIdx + 1).trim();
         options.headers[key] = value;
       }
-    } else if (!arg.startsWith('-') && !options.remoteUrl) {
-      options.remoteUrl = arg;
+    } else if (!arg.startsWith('-')) {
+      positional.push(arg);
+    }
+  }
+
+  if (positional.length > 0) {
+    if (positional[0] === 'login') {
+      options.command = 'login';
+      if (positional.length > 1) {
+        options.remoteUrl = positional[1];
+      }
+    } else {
+      options.remoteUrl = positional[0];
     }
   }
 
@@ -65,19 +85,116 @@ Zero-config Stdio to Streamable HTTP MCP runtime proxy with automatic OAuth PKCE
 
 Usage:
   mcp-oauth-proxy <remote-url> [options]
+  mcp-oauth-proxy login <remote-url> [options]
+
+Commands:
+  login <remote-url>     Perform interactive OAuth authentication, save credentials, and exit
 
 Options:
   --client-id <id>       Pre-configured Client ID (for servers without RFC 7591 dynamic registration)
   --header "K: V"        Custom request header (e.g. bypass OAuth using static API key)
+  --auto-browser         Automatically launch browser when re-authentication is required in proxy mode
   --no-browser           Do not automatically open default browser; print authorization URL to stderr
-  --login-only           Perform interactive OAuth authentication, save credentials, and exit
+  --login-only           Alias for the login command
   -h, --help             Display this help message
   -v, --version          Display version number
 
 Examples:
+  mcp-oauth-proxy login https://mcp.200lab.io/mcp/learner
   mcp-oauth-proxy https://mcp.200lab.io/mcp/learner
   mcp-oauth-proxy https://api.example.com/mcp --header "Authorization: Bearer my_api_key"
 `);
+}
+
+export async function performLogin(options: {
+  remoteUrl: string;
+  clientId?: string;
+  noBrowser?: boolean;
+  store: TokenStore;
+  fetchFn?: typeof fetch;
+  log?: (msg: string) => void;
+}): Promise<string> {
+  const {
+    remoteUrl,
+    clientId,
+    noBrowser = false,
+    store,
+    fetchFn = fetch,
+    log = console.error
+  } = options;
+
+  log(`[*] Discovering OAuth metadata for: ${remoteUrl}`);
+  const metadata = await discoverOAuth(remoteUrl, fetchFn);
+
+  log(`[*] Starting local callback server...`);
+  const callbackServer = await startCallbackServer();
+  const pkce = generatePKCE();
+
+  const effectiveClientId = await resolveClientId({
+    registrationEndpoint: metadata.registrationEndpoint,
+    redirectUri: callbackServer.redirectUri,
+    explicitClientId: clientId,
+    fetchFn,
+    log
+  });
+
+  const authUrl = new URL(metadata.authorizationEndpoint);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('client_id', effectiveClientId);
+  authUrl.searchParams.set('redirect_uri', callbackServer.redirectUri);
+  authUrl.searchParams.set('scope', metadata.scopes.join(' '));
+  authUrl.searchParams.set('code_challenge', pkce.challenge);
+  authUrl.searchParams.set('code_challenge_method', pkce.method);
+  authUrl.searchParams.set('resource', metadata.resource);
+
+  if (!noBrowser) {
+    await openBrowser(authUrl.toString(), log);
+  } else {
+    log(`[*] Open this URL in your browser to complete authorization:\n${authUrl.toString()}\n`);
+  }
+
+  const code = await callbackServer.waitForCode();
+  log(`[*] Authorization code received. Exchanging for token...`);
+
+  const tokenRes = await fetchFn(metadata.tokenEndpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: effectiveClientId,
+      code,
+      redirect_uri: callbackServer.redirectUri,
+      code_verifier: pkce.verifier
+    })
+  });
+
+  if (!tokenRes.ok) {
+    const errText = await tokenRes.text();
+    await callbackServer.close();
+    throw new Error(`Token exchange failed (HTTP ${tokenRes.status}): ${errText}`);
+  }
+
+  const tokenData = (await tokenRes.json()) as {
+    access_token: string;
+    refresh_token?: string;
+    expires_in: number;
+    token_type?: string;
+    scope?: string;
+  };
+
+  store.saveToken(metadata.resource, {
+    accessToken: tokenData.access_token,
+    refreshToken: tokenData.refresh_token,
+    expiresAt: Date.now() + tokenData.expires_in * 1000,
+    tokenType: tokenData.token_type,
+    scope: tokenData.scope,
+    clientId: effectiveClientId
+  });
+
+  log(`[+] Authentication successful! Credentials securely stored.`);
+  await callbackServer.close();
+
+  return tokenData.access_token;
 }
 
 export async function main(args = process.argv.slice(2)): Promise<void> {
@@ -101,6 +218,17 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   const remoteUrl = options.remoteUrl;
   const store = new TokenStore();
 
+  if (options.command === 'login') {
+    await performLogin({
+      remoteUrl,
+      clientId: options.clientId,
+      noBrowser: options.noBrowser,
+      store
+    });
+    console.error(`[+] Authentication complete.`);
+    process.exit(0);
+  }
+
   const getToken = async (): Promise<string> => {
     // If user provided a manual Authorization header via --header
     if (options.headers['Authorization']) {
@@ -109,18 +237,14 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 
     // 1. Discover OAuth Metadata from remote server
     const metadata = await discoverOAuth(remoteUrl);
-    const clientId = await resolveClientId({
-      registrationEndpoint: metadata.registrationEndpoint,
-      redirectUri: 'http://localhost:8080/callback',
-      explicitClientId: options.clientId,
-      log: console.error
-    });
+    const storedToken = store.getToken(metadata.resource);
+    const existingClientId = storedToken?.clientId || options.clientId;
 
     // 2. Try to get existing token or execute silent background refresh
     const existingToken = await store.getOrRefreshToken({
       resource: metadata.resource,
       tokenEndpoint: metadata.tokenEndpoint,
-      clientId,
+      clientId: existingClientId,
       log: console.error
     });
 
@@ -128,78 +252,25 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       return existingToken;
     }
 
-    // 3. No valid token: start interactive OAuth PKCE flow
-    console.error(`[*] Initiating OAuth authentication flow for: ${metadata.resource}`);
-    const callbackServer = await startCallbackServer();
-    const pkce = generatePKCE();
-
-    // Re-resolve client with exact dynamic callback port
-    const effectiveClientId = await resolveClientId({
-      registrationEndpoint: metadata.registrationEndpoint,
-      redirectUri: callbackServer.redirectUri,
-      explicitClientId: options.clientId,
-      log: console.error
-    });
-
-    const authUrl = new URL(metadata.authorizationEndpoint);
-    authUrl.searchParams.set('response_type', 'code');
-    authUrl.searchParams.set('client_id', effectiveClientId);
-    authUrl.searchParams.set('redirect_uri', callbackServer.redirectUri);
-    authUrl.searchParams.set('scope', metadata.scopes.join(' '));
-    authUrl.searchParams.set('code_challenge', pkce.challenge);
-    authUrl.searchParams.set('code_challenge_method', pkce.method);
-    authUrl.searchParams.set('resource', metadata.resource);
-
-    if (!options.noBrowser) {
-      await openBrowser(authUrl.toString(), console.error);
-    } else {
-      console.error(`[*] Open this URL in your browser to complete authorization:\n${authUrl.toString()}\n`);
+    // 3. No valid token found or refresh failed:
+    if (options.autoBrowser) {
+      return await performLogin({
+        remoteUrl,
+        clientId: options.clientId,
+        noBrowser: options.noBrowser,
+        store
+      });
     }
 
-    const code = await callbackServer.waitForCode();
-    console.error(`[*] Authorization code received. Exchanging for token...`);
+    // Default Non-Intrusive mode: do not launch browser unsolicitedly
+    const loginCommand = `npx @thuyphuocthinh/mcp-auth-proxy login ${remoteUrl}`;
+    const message = `Authentication required for ${remoteUrl}. Please run: ${loginCommand}`;
+    console.error(`[-] ${message}`);
 
-    const tokenRes = await fetch(metadata.tokenEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        client_id: effectiveClientId,
-        code,
-        redirect_uri: callbackServer.redirectUri,
-        code_verifier: pkce.verifier
-      })
-    });
-
-    if (!tokenRes.ok) {
-      const errText = await tokenRes.text();
-      await callbackServer.close();
-      throw new Error(`Token exchange failed (HTTP ${tokenRes.status}): ${errText}`);
-    }
-
-    const tokenData = (await tokenRes.json()) as {
-      access_token: string;
-      refresh_token?: string;
-      expires_in: number;
-    };
-
-    store.saveToken(metadata.resource, {
-      accessToken: tokenData.access_token,
-      refreshToken: tokenData.refresh_token,
-      expiresAt: Date.now() + tokenData.expires_in * 1000
-    });
-
-    console.error(`[+] Authentication successful! Credentials securely stored.`);
-    await callbackServer.close();
-
-    return tokenData.access_token;
+    const authError: any = new Error(message);
+    authError.code = -32000;
+    throw authError;
   };
-
-  if (options.loginOnly) {
-    await getToken();
-    console.error(`[+] Pre-authentication complete (--login-only).`);
-    process.exit(0);
-  }
 
   // Launch Stdio runtime proxy loop
   await startProxy({

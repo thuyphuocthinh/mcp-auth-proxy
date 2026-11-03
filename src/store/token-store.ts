@@ -8,6 +8,7 @@ export interface StoredToken {
   expiresAt: number; // Unix timestamp in milliseconds
   tokenType?: string;
   scope?: string;
+  clientId?: string;
 }
 
 export class TokenStore {
@@ -38,15 +39,21 @@ export class TokenStore {
   async refreshToken(options: {
     resource: string;
     tokenEndpoint: string;
-    clientId: string;
+    clientId?: string;
     fetchFn?: typeof fetch;
     log?: (msg: string) => void;
   }): Promise<string | null> {
-    const { resource, tokenEndpoint, clientId, fetchFn = fetch, log = console.log } = options;
+    const { resource, tokenEndpoint, fetchFn = fetch, log = console.log } = options;
     const current = this.getToken(resource);
 
     if (!current?.refreshToken) {
       log(`[-] No refresh_token available for resource: ${resource}`);
+      return null;
+    }
+
+    const effectiveClientId = current.clientId || options.clientId;
+    if (!effectiveClientId) {
+      log(`[-] No client_id available for silent token refresh for resource: ${resource}`);
       return null;
     }
 
@@ -57,7 +64,7 @@ export class TokenStore {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           grant_type: 'refresh_token',
-          client_id: clientId,
+          client_id: effectiveClientId,
           refresh_token: current.refreshToken
         })
       });
@@ -81,7 +88,8 @@ export class TokenStore {
         refreshToken: data.refresh_token || current.refreshToken,
         expiresAt: Date.now() + data.expires_in * 1000,
         tokenType: data.token_type || current.tokenType,
-        scope: data.scope || current.scope
+        scope: data.scope || current.scope,
+        clientId: effectiveClientId
       };
 
       this.saveToken(resource, updatedToken);
@@ -96,7 +104,7 @@ export class TokenStore {
   async getOrRefreshToken(options: {
     resource: string;
     tokenEndpoint: string;
-    clientId: string;
+    clientId?: string;
     fetchFn?: typeof fetch;
     log?: (msg: string) => void;
   }): Promise<string | null> {
@@ -114,7 +122,10 @@ export class TokenStore {
 
     // Expiring soon: silently refresh if refresh_token exists
     if (current.refreshToken) {
-      const refreshed = await this.refreshToken(options);
+      const refreshed = await this.refreshToken({
+        ...options,
+        clientId: current.clientId || options.clientId
+      });
       if (refreshed) {
         return refreshed;
       }

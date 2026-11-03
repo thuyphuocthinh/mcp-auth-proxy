@@ -151,11 +151,14 @@ export async function startProxy(options: ProxyOptions): Promise<void> {
         requestId = parsed.id ?? null;
       } catch {}
 
+      const errorCode =
+        err && typeof err.code === 'number' ? err.code : -32603;
+
       output.write(
         JSON.stringify({
           jsonrpc: '2.0',
           id: requestId,
-          error: { code: -32603, message: err.message }
+          error: { code: errorCode, message: err.message }
         }) + '\n'
       );
     }
